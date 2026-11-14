@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>شحن ونقاط</title>
+<link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#F2F5F3;--ink:#10222B;--mut:#5C6B72;--card:#fff;--acc:#0E7C6B;--gold:#E0A526;--red:#C8402F;--line:#DCE4E0}
+@media(prefers-color-scheme:dark){:root{--bg:#0E171B;--ink:#E8EFEC;--mut:#93A3A9;--card:#17242A;--acc:#2FB59F;--gold:#E8B84A;--red:#E5705F;--line:#27373E}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.6 Tajawal,sans-serif}
+main{max-width:720px;margin:auto;padding:16px}
+h1,h2,h3{margin:0}.top{display:flex;justify-content:space-between;align-items:center;padding:8px 0 16px}
+.wallet{background:var(--acc);color:#fff;border-radius:20px;padding:22px;display:flex;justify-content:space-between;align-items:end}
+.wallet b{font-size:42px;font-weight:800;line-height:1}.wallet small{opacity:.85;display:block}
+.pts{background:var(--gold);color:#2a1d00;border-radius:999px;padding:6px 14px;font-weight:800}
+.tabs{display:flex;gap:8px;margin:18px 0}.tabs button{flex:1}
+button,input,select{font:inherit;border-radius:12px;border:1px solid var(--line);padding:10px 14px;background:var(--card);color:var(--ink)}
+button{cursor:pointer;font-weight:700}button.p{background:var(--acc);color:#fff;border-color:var(--acc)}button.on{background:var(--ink);color:var(--bg)}
+button.d{color:var(--red)}button:focus-visible,input:focus-visible{outline:3px solid var(--gold)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;display:flex;flex-direction:column;gap:8px}
+.row{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:10px 0;border-bottom:1px solid var(--line)}
+.col{display:grid;gap:10px}.mut{color:var(--mut);font-size:14px}.st{font-size:13px;font-weight:700}
+.pending{color:var(--gold)}.done,.approved{color:var(--acc)}.rejected{color:var(--red)}
+.sec{margin-top:24px}.sec h3{margin-bottom:6px}
+#msg{position:fixed;bottom:16px;inset-inline:16px;max-width:420px;margin:auto;background:var(--ink);color:var(--bg);padding:12px 16px;border-radius:12px;display:none}
+</style>
+</head>
+<body>
+<main id="app"></main><div id="msg" role="status"></div>
+<script type="module">
+import {initializeApp} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+import {getAuth,onAuthStateChanged,signInWithEmailAndPassword,createUserWithEmailAndPassword,signOut} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+import {getFirestore,doc,getDoc,setDoc,addDoc,updateDoc,deleteDoc,collection,query,where,onSnapshot,runTransaction,increment} from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+// 1) الصق إعدادات Firebase تبعك هون
+const cfg={apiKey:"PASTE",authDomain:"PASTE",projectId:"PASTE",appId:"PASTE"};
+// 2) رقم Whish Money تبعك
+const WHISH="رقم Whish تبعك";
+
+const app=initializeApp(cfg),auth=getAuth(app),db=getFirestore(app);
+const S={user:null,me:null,admin:false,items:[],orders:[],topups:[],users:[],tab:"recharge",mode:"login",view:"shop"};
+let unsubs=[];
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const money=n=>(Math.round((n||0)*100)/100)+"$";
+const ST={pending:"قيد الانتظار",done:"تم",approved:"تم القبول",rejected:"مرفوض"};
+const toast=t=>{const m=$("msg");m.textContent=t;m.style.display="block";setTimeout(()=>m.style.display="none",3200)};
+const mail=p=>p.replace(/\D/g,"")+"@users.local";
+const by=(a,k="t")=>[...a].sort((x,y)=>(y[k]||0)-(x[k]||0));
+const listen=(q,fn)=>unsubs.push(onSnapshot(q,s=>{fn(s.docs.map(d=>({id:d.id,...d.data()})));render()}));
+
+onAuthStateChanged(auth,async u=>{
+  unsubs.forEach(f=>f());unsubs=[];S.user=u;S.me=null;S.admin=false;S.view="shop";
+  listen(collection(db,"items"),a=>S.items=a);
+  if(!u)return render();
+  S.admin=(await getDoc(doc(db,"admins",u.uid))).exists();
+  unsubs.push(onSnapshot(doc(db,"users",u.uid),s=>{S.me=s.data();render()}));
+  listen(query(collection(db,"orders"),where("uid","==",u.uid)),a=>S.orders=a);
+  listen(query(collection(db,"topups"),where("uid","==",u.uid)),a=>S.topups=a);
+  if(S.admin){
+    listen(collection(db,"users"),a=>S.users=a);
+    listen(collection(db,"orders"),a=>S.aOrders=a);
+    listen(collection(db,"topups"),a=>S.aTopups=a);
+  }
+});
+
+window.setMode=m=>{S.mode=m;render()};
+window.setTab=t=>{S.tab=t;render()};
+window.setView=v=>{S.view=v;render()};
+window.out=()=>signOut(auth);
+
+window.go=async()=>{
+  const phone=$("ph").value,pass=$("pw").value;
+  try{
+    if(S.mode==="login")await signInWithEmailAndPassword(auth,mail(phone),pass);
+    else{
+      const name=$("nm").value.trim();if(!name)return toast("اكتب اسمك");
+      const c=await createUserWithEmailAndPassword(auth,mail(phone),pass);
+      await setDoc(doc(db,"users",c.user.uid),{name,phone,balance:0,points:0});
+    }
+  }catch(e){toast("ما زبطت: تأكد من الرقم وكلمة السر (6 أحرف على الأقل)")}
+};
+
+window.buy=async id=>{
+  const it=S.items.find(x=>x.id===id);let line="";
+  if(it.kind==="recharge"){line=prompt("رقم الخط اللي بدك تشرجه")||"";if(!line)return}
+  if((S.me?.balance||0)<it.price)return toast("رصيدك ما بيكفي، اشحن رصيدك أول");
+  await addDoc(collection(db,"orders"),{uid:S.user.uid,name:S.me.name,phone:S.me.phone,title:it.title,kind:it.kind,price:it.price,points:it.points||0,line,status:"pending",t:Date.now()});
+  toast("وصل طلبك، رح ننفذه ونخصم من رصيدك");
+};
+
+window.topup=async()=>{
+  const amount=parseFloat($("ta").value),ref=$("tr").value.trim();
+  if(!(amount>0)||!ref)return toast("اكتب المبلغ ورقم الحوالة");
+  await addDoc(collection(db,"topups"),{uid:S.user.uid,name:S.me.name,phone:S.me.phone,amount,ref,status:"pending",t:Date.now()});
+  $("ta").value=$("tr").value="";toast("وصل طلب الشحن، رح نأكد الحوالة ونضيف رصيدك");
+};
+
+// ---- أدمن ----
+window.okTopup=id=>runTransaction(db,async tx=>{
+  const r=doc(db,"topups",id),t=(await tx.get(r)).data();if(t.status!=="pending")return;
+  tx.update(doc(db,"users",t.uid),{balance:increment(t.amount)});tx.update(r,{status:"approved"});
+}).then(()=>toast("انضاف الرصيد"));
+window.noTopup=id=>updateDoc(doc(db,"topups",id),{status:"rejected"});
+window.okOrder=id=>runTransaction(db,async tx=>{
+  const r=doc(db,"orders",id),o=(await tx.get(r)).data();if(o.status!=="pending")return;
+  const u=(await tx.get(doc(db,"users",o.uid))).data();
+  if(u.balance<o.price)throw new Error("low");
+  tx.update(doc(db,"users",o.uid),{balance:increment(-o.price),points:increment(o.points)});tx.update(r,{status:"done"});
+}).then(()=>toast("تم: انخصم الرصيد وانضافت النقاط")).catch(e=>toast(e.message==="low"?"رصيد الزبون ما بيكفي":"صار خطأ"));
+window.noOrder=id=>updateDoc(doc(db,"orders",id),{status:"rejected"});
+window.adjust=async id=>{
+  const b=parseFloat(prompt("زيادة/نقصان الرصيد (مثلاً 5 أو -2). 0 للتخطي")||0),p=parseInt(prompt("زيادة/نقصان النقاط. 0 للتخطي")||0);
+  await updateDoc(doc(db,"users",id),{balance:increment(b||0),points:increment(p||0)});
+};
+window.addItem=async()=>{
+  const v=k=>$(k).value.trim(),title=v("it"),price=parseFloat(v("ip"));
+  if(!title||!(price>0))return toast("اكتب الاسم والسعر");
+  await addDoc(collection(db,"items"),{kind:v("ik"),title,price,points:parseInt(v("ipt"))||0});
+  ["it","ip","ipt"].forEach(k=>$(k).value="");
+};
+window.delItem=id=>confirm("حذف؟")&&deleteDoc(doc(db,"items",id));
+window.seed=async()=>{
+  for(const [t,p,pt] of [["Alfa 3.03$",3.03,3],["Alfa 4.5$",4.5,5],["Touch 3.03$",3.03,3],["Touch 4.5$",4.5,5]])
+    await addDoc(collection(db,"items"),{kind:"recharge",title:t,price:p,points:pt});
+};
+
+// ---- واجهة ----
+const itemsHtml=kind=>{
+  const a=S.items.filter(i=>i.kind===kind);
+  if(!a.length)return `<p class="mut">ما في شي هون لسا.</p>`;
+  return `<div class="grid">${a.map(i=>`<div class="card"><b>${esc(i.title)}</b><span>${money(i.price)}</span><span class="mut">+${i.points||0} نقطة</span><button class="p" onclick="buy('${i.id}')">${kind==="recharge"?"اشحن":"اشتري"}</button></div>`).join("")}</div>`;
+};
+const hist=(a,fn)=>a.length?by(a).map(x=>`<div class="row"><span>${fn(x)}</span><span class="st ${x.status}">${ST[x.status]}</span></div>`).join(""):`<p class="mut">ما في عمليات.</p>`;
+
+function authView(){
+  const r=S.mode==="reg";
+  return `<div class="top"><h1>شحن ونقاط</h1></div><div class="card col">
+  ${r?`<input id="nm" placeholder="الاسم" autocomplete="name">`:""}
+  <input id="ph" type="tel" inputmode="tel" placeholder="رقم التلفون" autocomplete="tel">
+  <input id="pw" type="password" placeholder="كلمة السر" autocomplete="${r?"new-password":"current-password"}">
+  <button class="p" onclick="go()">${r?"إنشاء حساب":"دخول"}</button>
+  <button onclick="setMode('${r?"login":"reg"}')">${r?"عندي حساب":"حساب جديد"}</button></div>`;
+}
+function shopView(){
+  return `<div class="tabs"><button class="${S.tab==="recharge"?"on":""}" onclick="setTab('recharge')">تشريج</button><button class="${S.tab==="product"?"on":""}" onclick="setTab('product')">المتجر</button></div>
+  ${itemsHtml(S.tab)}
+  <div class="sec card col"><h3>اشحن رصيدك</h3><p class="mut">حوّل المبلغ على Whish Money للرقم: <b>${esc(WHISH)}</b>، وبعدين اكتب التفاصيل.</p>
+  <input id="ta" type="number" min="0" step="0.01" placeholder="المبلغ بالدولار"><input id="tr" placeholder="رقم الحوالة"><button class="p" onclick="topup()">أرسل طلب الشحن</button></div>
+  <div class="sec"><h3>طلباتي</h3>${hist(S.orders,o=>`${esc(o.title)} · ${money(o.price)}`)}</div>
+  <div class="sec"><h3>شحن الرصيد</h3>${hist(S.topups,t=>`${money(t.amount)} · ${esc(t.ref)}`)}</div>`;
+}
+function adminView(){
+  const pt=by((S.aTopups||[]).filter(x=>x.status==="pending")),po=by((S.aOrders||[]).filter(x=>x.status==="pending"));
+  const btn=(ok,no,id)=>`<span><button class="p" onclick="${ok}('${id}')">قبول</button> <button class="d" onclick="${no}('${id}')">رفض</button></span>`;
+  return `<div class="sec"><h3>طلبات شحن الرصيد (${pt.length})</h3>${pt.map(t=>`<div class="row"><span>${esc(t.name)} · ${esc(t.phone)}<br>${money(t.amount)} · حوالة ${esc(t.ref)}</span>${btn("okTopup","noTopup",t.id)}</div>`).join("")||`<p class="mut">ما في طلبات.</p>`}</div>
+  <div class="sec"><h3>طلبات التشريج والشراء (${po.length})</h3>${po.map(o=>`<div class="row"><span>${esc(o.name)} · ${esc(o.phone)}<br>${esc(o.title)} · ${money(o.price)}${o.line?`<br>الخط: <b>${esc(o.line)}</b>`:""}</span>${btn("okOrder","noOrder",o.id)}</div>`).join("")||`<p class="mut">ما في طلبات.</p>`}</div>
+  <div class="sec"><h3>الزباين</h3>${S.users.map(u=>`<div class="row"><span>${esc(u.name)} · ${esc(u.phone)}<br>${money(u.balance)} · ${u.points||0} نقطة</span><button onclick="adjust('${u.id}')">تعديل</button></div>`).join("")}</div>
+  <div class="sec card col"><h3>إضافة باقة أو منتج</h3><select id="ik"><option value="recharge">تشريج</option><option value="product">منتج</option></select>
+  <input id="it" placeholder="الاسم"><input id="ip" type="number" step="0.01" placeholder="السعر بالدولار"><input id="ipt" type="number" placeholder="النقاط">
+  <button class="p" onclick="addItem()">أضف</button><button onclick="seed()">باقات تجريبية (Alfa / Touch)</button></div>
+  <div class="sec"><h3>الباقات والمنتجات</h3>${S.items.map(i=>`<div class="row"><span>${esc(i.title)} · ${money(i.price)} · ${i.points||0} نقطة</span><button class="d" onclick="delItem('${i.id}')">حذف</button></div>`).join("")}</div>`;
+}
+function render(){
+  const keep=document.activeElement?.id,app=$("app");
+  if(!S.user)return app.innerHTML=authView();
+  if(!S.me)return app.innerHTML=`<p class="mut">لحظة...</p>`;
+  app.innerHTML=`<div class="top"><h1>أهلاً ${esc(S.me.name)}</h1><span>${S.admin?`<button onclick="setView('${S.view==="admin"?"shop":"admin"}')">${S.view==="admin"?"الموقع":"لوحة التحكم"}</button> `:""}<button onclick="out()">خروج</button></span></div>
+  <div class="wallet"><div><small>رصيدك</small><b>${money(S.me.balance)}</b></div><span class="pts">${S.me.points||0} نقطة</span></div>
+  ${S.view==="admin"&&S.admin?adminView():shopView()}`;
+  if(keep&&$(keep))$(keep).focus();
+}
+render();
+</script>
+</body>
+</html>
